@@ -166,18 +166,33 @@ function syncSession(
   isActive: boolean
 ): void {
   const config = vscode.workspace.getConfiguration("dashboardHelper");
-  const hostname =
-    config.get<string>("hostAlias", "").trim() || os.hostname();
 
   const repo = folder.uri.scheme === "file"
     ? folder.uri.fsPath
     : folder.uri.path;
 
-  // Generate the canonical URL pointing back to this extension's URI handler
+  // Derive the remote authority from the workspace URI when running on a remote host.
+  // folder.uri.authority for a remote workspace is "ssh-remote+root@minipc" — stripping
+  // the "ssh-remote+" prefix gives the exact connection string VS Code uses to hash the
+  // workspace identity (e.g. "root@minipc").  This is more reliable than os.hostname()
+  // which only gives the bare machine name without the SSH user.
+  let remote: string;
+  if (folder.uri.scheme === "vscode-remote" && folder.uri.authority.startsWith("ssh-remote+")) {
+    remote = folder.uri.authority.slice("ssh-remote+".length); // "root@minipc"
+  } else {
+    remote = config.get<string>("hostAlias", "").trim() || os.hostname();
+  }
+
+  // hostname for the checkin payload (bare machine name, no user)
+  const hostname = config.get<string>("hostAlias", "").trim() || os.hostname();
+
+  // Generate the canonical URL — remote must match the SSH authority exactly
   const vscodeUrl =
     `vscode://devdashboard.dashboard-helper/open` +
-    `?remote=${encodeURIComponent(hostname)}` +
+    `?remote=${encodeURIComponent(remote)}` +
     `&folder=${encodeURIComponent(repo)}`;
+
+  log.appendLine(`[syncSession] remote=${remote} repo=${repo} active=${isActive}`);
 
   const payload = JSON.stringify({
     hostname,
