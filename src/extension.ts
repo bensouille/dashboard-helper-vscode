@@ -1,18 +1,15 @@
 /**
  * Dashboard Helper — VS Code Extension
  *
- * Two responsibilities depending on context:
+ * Two responsibilities dispatched by extensionKind:
  *
- * 1. URI Handler (local/UI host):
+ * 1. URI Handler  [extensionKind = UI]  — runs on the LOCAL client (Windows)
  *    Handles  vscode://dashboard-helper/open?remote=ALIAS&folder=/path
- *    and opens the folder in a NEW window (forceNewWindow: true), which is
- *    guaranteed to never overwrite an existing session.
+ *    and opens the workspace in a NEW window (forceNewWindow: true).
  *
- * 2. Workspace Reporter (remote host):
- *    When a workspace is open and dashboardHelper.backendUrl + agentToken are
- *    configured, POSTs the current workspace(s) to the backend so the dashboard
- *    stays in sync without the full agent running.
- *    Uses  POST /api/v1/hosts/session-sync  (lightweight, no system metrics).
+ * 2. Workspace Reporter  [extensionKind = Workspace]  — runs on the REMOTE host (Linux)
+ *    Detects open workspaceFolders and POSTs them to the backend so the
+ *    dashboard stays in sync.  Uses POST /api/v1/hosts/session-sync.
  */
 
 import * as vscode from "vscode";
@@ -29,65 +26,21 @@ let log: vscode.OutputChannel;
 export function activate(context: vscode.ExtensionContext): void {
   log = vscode.window.createOutputChannel("Dashboard Helper");
   context.subscriptions.push(log);
-  log.appendLine(`[activate] extension id=${context.extension.id}`);
 
-  // ── 1. URI handler ────────────────────────────────────────────────────────
-  // Always registered; VS Code only routes it when the extension is local.
-  context.subscriptions.push(
-    vscode.window.registerUriHandler({ handleUri })
-  );
-  log.appendLine("[activate] URI handler registered for vscode://dashboard-helper");
+  const kind = context.extension.extensionKind;
+  const kindLabel = kind === vscode.ExtensionKind.UI ? "UI (local)" : "Workspace (remote)";
+  log.appendLine(`[activate] running as ${kindLabel}`);
 
-  // ── 2. Workspace reporter ─────────────────────────────────────────────────
-  // Only meaningful when there are open workspace folders (i.e. on a remote or
-  // when a local folder is open). Skipped silently when not configured.
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders?.length) {
-    return;
+  if (kind === vscode.ExtensionKind.UI) {
+    // ── URI handler — local client only ─────────────────────────────────────
+    context.subscriptions.push(
+      vscode.window.registerUriHandler({ handleUri })
+    );
+    log.appendLine("[activate] URI handler registered → vscode://dashboard-helper/open");
+  } else {
+    // ── Workspace reporter — remote host only ────────────────────────────────
+    startReporter(context);
   }
-
-  const config = vscode.workspace.getConfiguration("dashboardHelper");
-  const backendUrl = config.get<string>("backendUrl", "").trim();
-  const token = config.get<string>("agentToken", "").trim();
-
-  if (!backendUrl || !token) {
-    return; // not configured — skip silently
-  }
-
-  const intervalSec = Math.max(
-    10,
-    config.get<number>("reportInterval", 60)
-  );
-
-  // Register all current folders as active immediately
-  for (const f of folders) {
-    syncSession(backendUrl, token, f, true);
-  }
-
-  // Keep in sync when folders are added / removed within the same window
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
-      for (const f of e.added) syncSession(backendUrl, token, f, true);
-      for (const f of e.removed) syncSession(backendUrl, token, f, false);
-    })
-  );
-
-  // Periodic heartbeat so the dashboard knows we're still alive
-  const timer = setInterval(() => {
-    for (const f of vscode.workspace.workspaceFolders ?? []) {
-      syncSession(backendUrl, token, f, true);
-    }
-  }, intervalSec * 1000);
-  context.subscriptions.push({ dispose: () => clearInterval(timer) });
-
-  // Mark sessions inactive when the window/extension host shuts down
-  context.subscriptions.push({
-    dispose() {
-      for (const f of vscode.workspace.workspaceFolders ?? []) {
-        syncSession(backendUrl, token, f, false);
-      }
-    },
-  });
 }
 
 export function deactivate(): void {}
@@ -147,7 +100,61 @@ function handleUri(uri: vscode.Uri): void {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace reporter
+// Workspace reporter — runs on the REMOTE host (extensionKind = Workspace)
+// ---------------------------------------------------------------------------
+
+function startReporter(context: vscode.ExtensionContext): void {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders?.length) {
+    log.appendLine("[reporter] no workspace folders open — skipping");
+    return;
+  }
+
+  const config = vscode.workspace.getConfiguration("dashboardHelper");
+  const backendUrl = config.get<string>("backendUrl", "").trim();
+  const token = config.get<string>("agentToken", "").trim();
+
+  if (!backendUrl || !token) {
+    log.appendLine("[reporter] backendUrl or agentToken not configured — skipping");
+    return;
+  }
+
+  const intervalSec = Math.max(10, config.get<number>("reportInterval", 60));
+  log.appendLine(`[reporter] starting — backend=${backendUrl} interval=${intervalSec}s`);
+
+  // Report all current folders as active immediately
+  for (const f of folders) {
+    syncSession(backendUrl, token, f, true);
+  }
+
+  // Track folder changes within the same window
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+      for (const f of e.added) syncSession(backendUrl, token, f, true);
+      for (const f of e.removed) syncSession(backendUrl, token, f, false);
+    })
+  );
+
+  // Periodic heartbeat
+  const timer = setInterval(() => {
+    for (const f of vscode.workspace.workspaceFolders ?? []) {
+      syncSession(backendUrl, token, f, true);
+    }
+  }, intervalSec * 1000);
+  context.subscriptions.push({ dispose: () => clearInterval(timer) });
+
+  // Mark inactive on shutdown
+  context.subscriptions.push({
+    dispose() {
+      for (const f of vscode.workspace.workspaceFolders ?? []) {
+        syncSession(backendUrl, token, f, false);
+      }
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Workspace reporter helpers
 // ---------------------------------------------------------------------------
 
 function syncSession(
