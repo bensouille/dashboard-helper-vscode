@@ -76,10 +76,9 @@ function handleUri(uri: vscode.Uri): void {
 
   if (remote) {
     const remotePath = folder || "/";
-    // VS Code normalises SSH remote authorities to lowercase internally for workspace
-    // identity hashing, even if the status bar displays a mixed-case label (e.g. "SSH: MiniPC").
-    // We must lowercase here to match the existing window's workspace URI.
-    const raw = `vscode-remote://ssh-remote+${remote.toLowerCase()}${remotePath}`;
+    // VS Code uses the exact SSH config Host alias as the remote authority (case-sensitive).
+    // Do NOT toLowerCase() — "MiniPC" and "Raspberry" must stay as-is to match the workspace hash.
+    const raw = `vscode-remote://ssh-remote+${remote}${remotePath}`;
     log.appendLine(`[handleUri] opening remote URI: ${raw}`);
     targetUri = vscode.Uri.parse(raw);
   } else if (folder) {
