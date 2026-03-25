@@ -60,6 +60,21 @@ export function deactivate(): void {}
  * for a given remote host + folder.  Returns the authority portion after
  * "ssh-remote+" (which may be a plain hostname or a hex-encoded JSON blob).
  */
+/**
+ * Returns true if `authority` (the part after "ssh-remote+") corresponds to
+ * a given remote hostname, supporting both plain ("MiniPC") and hex-JSON
+ * ('{"hostName":"MiniPC"}' → hex) formats.
+ */
+function authorityMatchesRemote(authority: string, remote: string): boolean {
+  if (authority === remote) { return true; }
+  try {
+    const json = JSON.parse(Buffer.from(authority, "hex").toString("utf-8"));
+    return json.hostName === remote;
+  } catch {
+    return false;
+  }
+}
+
 function findStoredAuthority(remote: string, remotePath: string): string | null {
   try {
     // globalStoragePath = .../Code/User/globalStorage/devdashboard.dashboard-helper
@@ -75,6 +90,11 @@ function findStoredAuthority(remote: string, remotePath: string): string | null 
     const normTarget = remotePath.replace(/\/+$/, "") || "/";
     const entries = fs.readdirSync(wsStoragePath);
 
+    // Collect all parsed entries for this remote so we can fallback to any of
+    // them when no exact path match exists (e.g. planning-vue3 was never opened
+    // directly from Windows, but dashboard on the same host was).
+    let fallbackAuthority: string | null = null;
+
     for (const entry of entries) {
       const wsJsonPath = path.join(wsStoragePath, entry, "workspace.json");
       if (!fs.existsSync(wsJsonPath)) { continue; }
@@ -88,35 +108,34 @@ function findStoredAuthority(remote: string, remotePath: string): string | null 
         if (parsed.scheme !== "vscode-remote") { continue; }
         if (!parsed.authority.startsWith("ssh-remote+")) { continue; }
 
+        const authority = parsed.authority.substring("ssh-remote+".length);
+        if (!authorityMatchesRemote(authority, remote)) { continue; }
+
+        // Keep first matching authority as fallback (in case no path matches)
+        if (!fallbackAuthority) {
+          fallbackAuthority = authority;
+        }
+
         // Compare folder path (normalise trailing slashes)
         const storedPath = parsed.path.replace(/\/+$/, "") || "/";
         if (storedPath !== normTarget) { continue; }
 
-        const authority = parsed.authority.substring("ssh-remote+".length);
-
-        // Plain match: authority === remote hostname
-        if (authority === remote) {
-          log.appendLine(`[findStoredAuthority] plain match: ${authority}`);
-          return authority;
-        }
-
-        // Hex-encoded JSON match: {"hostName":"MiniPC"} → hex
-        try {
-          const decoded = Buffer.from(authority, "hex").toString("utf-8");
-          const json = JSON.parse(decoded);
-          if (json.hostName === remote) {
-            log.appendLine(`[findStoredAuthority] hex match: ${authority}`);
-            return authority;
-          }
-        } catch {
-          // not hex — skip
-        }
+        log.appendLine(`[findStoredAuthority] exact match: ${authority} for path ${normTarget}`);
+        return authority;
       } catch {
         // corrupt workspace.json — skip
       }
     }
 
-    log.appendLine(`[findStoredAuthority] no match for remote=${remote} path=${normTarget}`);
+    // No exact path match found.  If we found at least one entry for this
+    // remote (e.g. MiniPC/dashboard), reuse its authority format so we build
+    // the correct URI (hex) rather than falling back to the plain hostname.
+    if (fallbackAuthority) {
+      log.appendLine(`[findStoredAuthority] no path match, using same-host authority: ${fallbackAuthority} for ${remote}${normTarget}`);
+      return fallbackAuthority;
+    }
+
+    log.appendLine(`[findStoredAuthority] no entry found for remote=${remote}`);
     return null;
   } catch (e) {
     log.appendLine(`[findStoredAuthority] error scanning: ${e}`);
