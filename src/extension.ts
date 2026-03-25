@@ -76,9 +76,14 @@ function handleUri(uri: vscode.Uri): void {
 
   if (remote) {
     const remotePath = folder || "/";
-    // VS Code uses the exact SSH config Host alias as the remote authority (case-sensitive).
-    // Do NOT toLowerCase() — "MiniPC" and "Raspberry" must stay as-is to match the workspace hash.
-    const raw = `vscode-remote://ssh-remote+${remote}${remotePath}`;
+    // Modern VS Code Remote SSH encodes the SSH host as a hex-encoded JSON blob:
+    //   {"hostName":"MiniPC"} → 7b22686f73744e616d65223a224d696e695043227d
+    // The authority becomes: ssh-remote+<hex>
+    // This matches the workspace storage hash so that forceNewWindow=false can
+    // find and focus an already-open window for that workspace.
+    const hostJson = JSON.stringify({ hostName: remote });
+    const hexAuthority = Buffer.from(hostJson, "utf-8").toString("hex");
+    const raw = `vscode-remote://ssh-remote+${hexAuthority}${remotePath}`;
     log.appendLine(`[handleUri] opening remote URI: ${raw}`);
     targetUri = vscode.Uri.parse(raw);
   } else if (folder) {
@@ -89,24 +94,12 @@ function handleUri(uri: vscode.Uri): void {
     return;
   }
 
-  // Smart window strategy:
-  // - If the current window already has this workspace open → do nothing (already there).
-  // - Otherwise → forceNewWindow: true so we never hijack a window that has a different project open.
-  // Note: this cannot detect OTHER already-open windows with the target workspace, so in that
-  // edge case it opens a duplicate. That is preferable to destroying someone's current session.
-  const targetUriStr = targetUri.toString();
-  const isCurrentWorkspace = vscode.workspace.workspaceFolders?.some(
-    (f) => f.uri.toString() === targetUriStr
-  ) ?? false;
-
-  if (isCurrentWorkspace) {
-    log.appendLine("[handleUri] target is already the current workspace — no action needed");
-    return;
-  }
-
-  log.appendLine(`[handleUri] calling vscode.openFolder with forceNewWindow=true`);
+  // Use forceNewWindow: false so VS Code first looks for an already-open window with this
+  // exact workspace URI and focuses it. Only if no such window exists does it open the folder
+  // in the current window. This is the correct behaviour for a session switcher.
+  log.appendLine(`[handleUri] calling vscode.openFolder with forceNewWindow=false`);
   vscode.commands.executeCommand("vscode.openFolder", targetUri, {
-    forceNewWindow: true,
+    forceNewWindow: false,
   }).then(
     () => log.appendLine("[handleUri] openFolder command executed"),
     (err) => {
