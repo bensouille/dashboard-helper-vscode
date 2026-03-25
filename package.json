@@ -2,7 +2,7 @@
   "name": "dashboard-helper",
   "displayName": "Dashboard Helper",
   "description": "Open remote SSH folders in a new VS Code window and sync active workspaces to your self-hosted developer dashboard.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "devdashboard",
   "engines": {
     "vscode": "^1.74.0"
