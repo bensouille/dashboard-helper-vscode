@@ -4,6 +4,7 @@
   "description": "Open remote SSH folders in a new VS Code window and automatically sync your active VS Code sessions to any backend dashboard.",
   "version": "0.2.0",
   "publisher": "remote",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.74.0"
   },
