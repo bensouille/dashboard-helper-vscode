@@ -89,9 +89,24 @@ function handleUri(uri: vscode.Uri): void {
     return;
   }
 
-  log.appendLine(`[handleUri] calling vscode.openFolder with forceNewWindow=false`);
+  // Smart window strategy:
+  // - If the current window already has this workspace open → do nothing (already there).
+  // - Otherwise → forceNewWindow: true so we never hijack a window that has a different project open.
+  // Note: this cannot detect OTHER already-open windows with the target workspace, so in that
+  // edge case it opens a duplicate. That is preferable to destroying someone's current session.
+  const targetUriStr = targetUri.toString();
+  const isCurrentWorkspace = vscode.workspace.workspaceFolders?.some(
+    (f) => f.uri.toString() === targetUriStr
+  ) ?? false;
+
+  if (isCurrentWorkspace) {
+    log.appendLine("[handleUri] target is already the current workspace — no action needed");
+    return;
+  }
+
+  log.appendLine(`[handleUri] calling vscode.openFolder with forceNewWindow=true`);
   vscode.commands.executeCommand("vscode.openFolder", targetUri, {
-    forceNewWindow: false,
+    forceNewWindow: true,
   }).then(
     () => log.appendLine("[handleUri] openFolder command executed"),
     (err) => {
