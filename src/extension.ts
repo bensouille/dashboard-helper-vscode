@@ -151,51 +151,6 @@ function findStoredAuthority(remote: string, remotePath: string): string | null 
   }
 }
 
-/**
- * Check VS Code's storage.json to see if any window currently has the target
- * URI open.  VS Code writes this file in real-time when windows open/close, so
- * it reliably reflects the current set of open windows.
- *
- * Returns true  → window is open  → use forceNewWindow: false (focus it)
- * Returns false → window not open → use forceNewWindow: true  (new window, no popup)
- */
-function isWindowCurrentlyOpen(targetUri: vscode.Uri): boolean {
-  try {
-    // globalStoragePath = .../Code/User/globalStorage/remote.session-reporter
-    // codeDir           = .../Code/
-    const userDir = path.dirname(path.dirname(globalStoragePath));
-    const codeDir = path.dirname(userDir);
-    const storagePath = path.join(codeDir, "storage.json");
-
-    if (!fs.existsSync(storagePath)) {
-      log.appendLine(`[isWindowCurrentlyOpen] storage.json not found at ${storagePath} — assuming not open`);
-      return false;
-    }
-
-    const storage = JSON.parse(fs.readFileSync(storagePath, "utf-8"));
-    const ws: Record<string, unknown> = storage.windowsState ?? {};
-    const openedWindows: unknown[] = [
-      ...(Array.isArray(ws.openedWindows) ? ws.openedWindows : []),
-      ...(ws.lastActiveWindow ? [ws.lastActiveWindow] : []),
-    ];
-
-    const targetStr = targetUri.toString();
-    for (const win of openedWindows) {
-      const w = win as Record<string, unknown>;
-      if (typeof w.folderUri === "string" && w.folderUri === targetStr) {
-        log.appendLine(`[isWindowCurrentlyOpen] match found: ${w.folderUri}`);
-        return true;
-      }
-    }
-
-    log.appendLine(`[isWindowCurrentlyOpen] no window open for ${targetStr}`);
-    return false;
-  } catch (e) {
-    log.appendLine(`[isWindowCurrentlyOpen] error reading storage.json: ${e} — assuming not open`);
-    return false;
-  }
-}
-
 function handleUri(uri: vscode.Uri): void {
   log.appendLine(`[handleUri] received: ${uri.toString()}`);
 
@@ -247,12 +202,11 @@ function handleUri(uri: vscode.Uri): void {
       return;
     }
 
-    // window open → forceNewWindow:false (focus it)
-    // window not open → forceNewWindow:true (new window)
-    const windowIsOpen = isWindowCurrentlyOpen(targetUri);
-    const forceNewWindow = !windowIsOpen;
-    log.appendLine(`[handleUri] windowIsOpen=${windowIsOpen} → forceNewWindow=${forceNewWindow}`);
-    vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow }).then(
+    // Always open in a new window — forceNewWindow:false relies on isWindowCurrentlyOpen
+    // reading storage.json which contains stale entries from previous sessions, causing
+    // false positives that make VS Code try to focus a non-existent window and block.
+    log.appendLine(`[handleUri] opening target in new window`);
+    vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow: true }).then(
       () => log.appendLine("[handleUri] openFolder executed"),
       (err) => {
         log.appendLine(`[handleUri] openFolder error: ${err}`);
@@ -268,10 +222,8 @@ function handleUri(uri: vscode.Uri): void {
     return;
   }
 
-  const windowIsOpen2 = isWindowCurrentlyOpen(targetUri);
-  const forceNewWindow = !windowIsOpen2;
-  log.appendLine(`[handleUri] windowIsOpen=${windowIsOpen2} → forceNewWindow=${forceNewWindow}`);
-  vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow }).then(
+  log.appendLine(`[handleUri] opening target in new window`);
+  vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow: true }).then(
     () => log.appendLine("[handleUri] openFolder command executed"),
     (err) => {
       log.appendLine(`[handleUri] openFolder error: ${err}`);
