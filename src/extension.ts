@@ -21,8 +21,6 @@ import * as http from "http";
 
 let log: vscode.OutputChannel;
 let globalStoragePath: string;
-let activationTime = 0;
-let firstUriHandled = false;
 
 // ---------------------------------------------------------------------------
 // Activation
@@ -31,8 +29,6 @@ let firstUriHandled = false;
 export function activate(context: vscode.ExtensionContext): void {
   log = vscode.window.createOutputChannel("Session Reporter");
   context.subscriptions.push(log);
-
-  activationTime = Date.now();
 
   // Store for workspaceStorage scanning (UI side)
   globalStoragePath = context.globalStorageUri.fsPath;
@@ -251,31 +247,11 @@ function handleUri(uri: vscode.Uri): void {
       return;
     }
 
-    // Decide forceNewWindow:
-    //   - target window already open  → forceNewWindow: false (focus it)
-    //   - target not open             → forceNewWindow: true  (always open new window,
-    //     never queue behind an SSH auth that may be in progress)
-    //
-    // Cold-launch: VS Code always restores the last window before processing the URI.
-    // After opening the target we close the auto-restored window (it was not opened by
-    // the user — VS Code just brought it back as a side-effect of startup).
+    // window open → forceNewWindow:false (focus it)
+    // window not open → forceNewWindow:true (new window)
     const windowIsOpen = isWindowCurrentlyOpen(targetUri);
-    const isColdLaunch = !firstUriHandled && (Date.now() - activationTime) < 5000;
-    firstUriHandled = true;
     const forceNewWindow = !windowIsOpen;
-    log.appendLine(`[handleUri] windowIsOpen=${windowIsOpen} isColdLaunch=${isColdLaunch} → forceNewWindow=${forceNewWindow}`);
-
-    if (isColdLaunch && forceNewWindow) {
-      // Cold launch: VS Code auto-restored the previous window before processing this URI.
-      // Open the target in a new window, then IMMEDIATELY close the restored window in
-      // the SAME execution context (no setTimeout) so closeWindow targets THIS window,
-      // not the newly opened one which would take focus after a delay.
-      log.appendLine("[handleUri] cold launch — open target then close restored window");
-      vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow: true });
-      vscode.commands.executeCommand("workbench.action.closeWindow");
-      return;
-    }
-
+    log.appendLine(`[handleUri] windowIsOpen=${windowIsOpen} → forceNewWindow=${forceNewWindow}`);
     vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow }).then(
       () => log.appendLine("[handleUri] openFolder executed"),
       (err) => {
@@ -293,17 +269,8 @@ function handleUri(uri: vscode.Uri): void {
   }
 
   const windowIsOpen2 = isWindowCurrentlyOpen(targetUri);
-  const isColdLaunch2 = !firstUriHandled && (Date.now() - activationTime) < 5000;
-  firstUriHandled = true;
   const forceNewWindow = !windowIsOpen2;
-  log.appendLine(`[handleUri] windowIsOpen=${windowIsOpen2} isColdLaunch=${isColdLaunch2} → forceNewWindow=${forceNewWindow}`);
-
-  if (isColdLaunch2 && forceNewWindow) {
-    vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow: true });
-    vscode.commands.executeCommand("workbench.action.closeWindow");
-    return;
-  }
-
+  log.appendLine(`[handleUri] windowIsOpen=${windowIsOpen2} → forceNewWindow=${forceNewWindow}`);
   vscode.commands.executeCommand("vscode.openFolder", targetUri, { forceNewWindow }).then(
     () => log.appendLine("[handleUri] openFolder command executed"),
     (err) => {
