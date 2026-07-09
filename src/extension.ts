@@ -76,6 +76,17 @@ export function activate(context: vscode.ExtensionContext): void {
       configure(context);
     })
   );
+
+  // ── Dashboard action poller ──────────────────────────────────────────────
+  // Poll the backend every 60s for pending actions (force-rescan, etc.)
+  // Only runs in workspace mode (on the remote host).
+  if (kind === vscode.ExtensionKind.Workspace) {
+    log.appendLine("[activate] starting dashboard action poller (60s interval)");
+    const pollTimer = setInterval(() => pollPendingActions(), 60_000);
+    context.subscriptions.push({ dispose: () => clearInterval(pollTimer) });
+    // Also check shortly after activation
+    setTimeout(() => pollPendingActions(), 15_000);
+  }
 }
 
 export function deactivate(): void {}
@@ -445,6 +456,130 @@ async function configure(context: vscode.ExtensionContext): Promise<void> {
 // Workspaces are stored in detected_workspaces_json (NOT as sessions).
 // The user reviews & adds them via the Scanner UI in the dashboard.
 // ---------------------------------------------------------------------------
+
+/** Report the currently active workspace to the backend session-sync endpoint. */
+function sendActiveSession(repoPath: string): void {
+  const cfg = vscode.workspace.getConfiguration("sessionReporter");
+  const backendUrl = cfg.get<string>("backendUrl", "").replace(/\/+$/, "");
+  const agentToken = cfg.get<string>("agentToken", "");
+
+  if (!backendUrl || !agentToken) {
+    log.appendLine("[sendActiveSession] backendUrl or agentToken not configured — skipping");
+    return;
+  }
+
+  const remotePart = os.hostname();
+  const workspace = repoPath.startsWith("/") ? repoPath : `/${repoPath}`;
+  const vscodeUrl = `vscode://remote.session-reporter/open?remote=${encodeURIComponent(remotePart)}&folder=${encodeURIComponent(workspace)}`;
+
+  const body = JSON.stringify({
+    hostname: os.hostname(),
+    repo: repoPath,
+    vscode_url: vscodeUrl,
+    is_active: true,
+  });
+
+  const apiUrl = new URL(backendUrl + "/api/v1/hosts/session-sync");
+  const options: https.RequestOptions = {
+    hostname: apiUrl.hostname,
+    port: apiUrl.port || (apiUrl.protocol === "https:" ? 443 : 80),
+    path: apiUrl.pathname + apiUrl.search,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+      "X-Agent-Token": agentToken,
+      "User-Agent": "session-reporter-vscode",
+    },
+  };
+
+  const transport = apiUrl.protocol === "https:" ? https : http;
+  const req = transport.request(options, (res) => {
+    let data = "";
+    res.on("data", (chunk: string) => { data += chunk; });
+    res.on("end", () => {
+      log.appendLine(`[sendActiveSession] done: HTTP ${res.statusCode}`);
+    });
+  });
+  req.on("error", (e: Error) => log.appendLine(`[sendActiveSession] error: ${e.message}`));
+  req.write(body);
+  req.end();
+}
+
+/** Poll the dashboard backend for pending actions (e.g. force-rescan). */
+function pollPendingActions(): void {
+  const cfg = vscode.workspace.getConfiguration("sessionReporter");
+  const backendUrl = cfg.get<string>("backendUrl", "").replace(/\/+$/, "");
+  const agentToken = cfg.get<string>("agentToken", "");
+
+  if (!backendUrl || !agentToken) {
+    return;
+  }
+
+  const apiUrl = new URL(backendUrl + "/api/v1/hosts/actions/pending");
+  apiUrl.searchParams.set("hostname", os.hostname());
+
+  const options: https.RequestOptions = {
+    hostname: apiUrl.hostname,
+    port: apiUrl.port || (apiUrl.protocol === "https:" ? 443 : 80),
+    path: apiUrl.pathname + apiUrl.search,
+    method: "GET",
+    headers: {
+      "X-Agent-Token": agentToken,
+      "User-Agent": "session-reporter-vscode",
+    },
+  };
+
+  const transport = apiUrl.protocol === "https:" ? https : http;
+  const req = transport.request(options, (res) => {
+    let data = "";
+    res.on("data", (chunk: string) => { data += chunk; });
+    res.on("end", () => {
+      if (res.statusCode !== 200) {
+        log.appendLine(`[pollPendingActions] HTTP ${res.statusCode}`);
+        return;
+      }
+      try {
+        const body = JSON.parse(data);
+        if (body.rescan_workspaces) {
+          log.appendLine("[pollPendingActions] backend requested workspace rescan — executing");
+          reportWorkspaces();
+        }
+        if (body.activate_session) {
+          const targetRepo: string = body.activate_session.repo;
+          log.appendLine(`[pollPendingActions] activate_session received: ${targetRepo}`);
+
+          const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+          if (currentFolder && currentFolder === targetRepo) {
+            // Already in the correct workspace → simple notification + report
+            log.appendLine("[pollPendingActions] already in target workspace — reporting active");
+            vscode.window.showInformationMessage(
+              `✅ Session activée : ${targetRepo.split("/").pop()}`
+            );
+            sendActiveSession(targetRepo);
+          } else {
+            // Different workspace (or no workspace open) → open in current window
+            log.appendLine("[pollPendingActions] opening target workspace in current window");
+            const uri = vscode.Uri.file(targetRepo);
+            vscode.commands.executeCommand(
+              "vscode.openFolder",
+              uri,
+              { forceNewWindow: false }
+            );
+          }
+        }
+      } catch (e) {
+        log.appendLine(`[pollPendingActions] parse error: ${e}`);
+      }
+    });
+  });
+  req.on("error", (e: Error) => {
+    log.appendLine(`[pollPendingActions] error: ${e.message}`);
+  });
+  req.end();
+}
+
 
 function reportWorkspaces(): void {
   const cfg = vscode.workspace.getConfiguration("sessionReporter");
